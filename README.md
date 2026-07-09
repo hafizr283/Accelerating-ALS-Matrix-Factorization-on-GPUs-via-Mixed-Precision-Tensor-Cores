@@ -1,4 +1,4 @@
-# APR-BALS: Mixed-Precision GPU Matrix Factorization for ALS via FP16 Tensor Cores
+# Accelerating ALS Matrix Factorization on GPUs via Mixed-Precision Tensor Cores
 
 > Adaptive-Precision Blocked Alternating Least Squares — a GPU implementation of
 > explicit-feedback matrix factorization that runs the dense parts of each ALS
