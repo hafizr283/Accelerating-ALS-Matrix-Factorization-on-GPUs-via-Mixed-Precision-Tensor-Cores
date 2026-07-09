@@ -10,6 +10,12 @@ This repository contains the code, preprocessing, and benchmarking harness for t
 undergraduate thesis *"Mixed-Precision GPU Matrix Factorization for ALS via FP16
 Tensor Cores Without Accuracy Loss."*
 
+> **This is the fresh, finalized version of the project.** The original development
+> repo — [hafizr283/GPU_Programming_Essentials](https://github.com/hafizr283/GPU_Programming_Essentials)
+> — was a draft/practice workspace with many experimental and one-off files, so it
+> was rebuilt clean here. That older repo also includes a **step-by-step tutorial on
+> how ALS works**, which is worth reading first if you're new to the algorithm.
+
 ---
 
 ## 1. What this does
@@ -166,6 +172,13 @@ python bench_eval_rmse.py ratings.bin
 | MovieLens 20M  | `ratings.bin`         | `ml20m`    |
 | Netflix        | `netflix_ratings.bin` | `netflix`  |
 
+### 5.5 Where to get the data
+The raw datasets are **not** shipped here (hundreds of MB, separate licenses):
+- MovieLens — https://grouplens.org/datasets/movielens/
+- Netflix Prize — https://www.kaggle.com/datasets/netflix-inc/netflix-prize-data
+  (convert to the `userId,movieId,rating,timestamp` CSV layout above, then run
+  `preprocess`).
+
 ---
 
 ## 6. Build & run the factorization
@@ -242,43 +255,7 @@ the protocol rules (do **not** claim to beat the Netflix Prize — the split dif
 
 ---
 
-## 9. Which files to upload to the repo
-
-**✅ Commit these (source + docs):**
-
-```
-README.md  BENCHMARKING.md  FIXLOG.md
-preprocess.cpp
-common.cuh  data_utils.cuh  fused_kernels.cuh  wmma_kernels.cuh  cholesky_kernels.cuh
-main_experiment.cu  justapr.cu
-baseline_als_gpu.py  bench_eval_rmse.py
-run_final.sh  run_pillar2.sh  setup_cumf.sh
-.gitignore
-```
-
-Optional but nice: a small `results/` folder with the final summary `.txt` logs so
-readers see numbers without a GPU, and the abstract PDF.
-
-**❌ Do NOT commit (add to `.gitignore`):**
-
-- **Compiled binaries** — `apr_k*`, `exp_k*`, `k16_fix`, `k32`, `main`,
-  `preprocess`, `preprocess.exe`, `bench_chol`, `justapr_k64_tiled`, `*.exe`,
-  `*.o`, `*.out`.
-- **Datasets** — `*.bin`, `*.csv`, `*.dat` (MovieLens/Netflix are hundreds of MB
-  and have their own licenses; link to the source instead — see below).
-- **Bulk logs / scratch** — `terminallog.txt`, `debugging_px.txt`,
-  `*_gpu.txt` dumps, `.jsonl` session logs, editor/IDE dirs (`.vscode/`, `.idea/`,
-  `.stfolder/`), `$RECYCLE.BIN/`.
-- **Large PDFs** you don't need in git history (keep only the abstract if any).
-
-Because the datasets aren't shipped, tell readers where to get them:
-- MovieLens: https://grouplens.org/datasets/movielens/
-- Netflix Prize: https://www.kaggle.com/datasets/netflix-inc/netflix-prize-data
-  (convert to `userId,movieId,rating,timestamp` CSV, then run `preprocess`).
-
----
-
-## 10. Citation
+## 9. Citation
 
 If you use this code, please cite the thesis:
 
@@ -293,4 +270,3 @@ If you use this code, please cite the thesis:
 
 Built on the BALS tiled sparse format (Blocked Alternating Least Squares for
 Parallel Sparse Matrix Factorization on GPUs).
-"# Accelerating-ALS-Matrix-Factorization-on-GPUs-via-Mixed-Precision-Tensor-Cores" 
