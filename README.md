@@ -1,0 +1,296 @@
+# APR-BALS: Mixed-Precision GPU Matrix Factorization for ALS via FP16 Tensor Cores
+
+> Adaptive-Precision Blocked Alternating Least Squares — a GPU implementation of
+> explicit-feedback matrix factorization that runs the dense parts of each ALS
+> update on FP16 **tensor cores (WMMA)** while keeping the numerically sensitive
+> parts in FP32. It reaches **up to ~15× wall-clock (~18× compute) speedup** over
+> an FP32 GPU baseline **with ≤ 0.1 % change in test RMSE**.
+
+This repository contains the code, preprocessing, and benchmarking harness for the
+undergraduate thesis *"Mixed-Precision GPU Matrix Factorization for ALS via FP16
+Tensor Cores Without Accuracy Loss."*
+
+---
+
+## 1. What this does
+
+Given a sparse user–item rating matrix `R`, ALS factorizes it into `P` (users × K)
+and `Q` (items × K) such that `R ≈ P Qᵀ`, by alternately solving the closed-form
+ridge-regression update for each row:
+
+```
+x_u = (Y_{I_u}ᵀ Y_{I_u} + λI)⁻¹ Y_{I_u}ᵀ r_u
+```
+
+The contribution (APR-BALS) is a **precision-dispatch** on top of the BALS tiled
+format: each entity is routed at runtime to one of three code paths depending on
+how many ratings it has, so the expensive `YᵀY` outer-product accumulation is done
+on FP16 tensor cores for the dense rows and in plain FP32 for the sparse rows —
+recovering the tensor-core speedup **without** the accuracy loss that a blanket
+FP16 conversion would cause.
+
+**Two-pillar evaluation** (see `BENCHMARKING.md`):
+- **Pillar 1 (main claim):** APR-BALS vs an FP32 baseline **in the same binary, on
+  the same GPU, same data** — only the precision-dispatch changes. This is the
+  speedup ratio the thesis reports.
+- **Pillar 2 (external baseline):** a standard PyTorch/cuBLAS GPU ALS
+  (`baseline_als_gpu.py`) and optionally cuMF, scored on the **identical frozen
+  split** via `bench_eval_rmse.py`.
+
+---
+
+## 2. Headline results
+
+APR-BALS vs the FP32 baseline in the **same binary, same GPU, same data** (only the
+precision-dispatch differs). Ratios are measured on one GPU (the machine cancels);
+test RMSE is machine-independent. Numbers below are the final run on an RTX 3060
+(sm_86); the ratios reproduce on a Tesla T4 (sm_75).
+
+**Netflix** (speedup grows with K):
+
+| K  | Wall speedup | Compute speedup | Test ΔRMSE |
+|----|--------------|-----------------|------------|
+| 16 | 4.61×        | 5.47×           | 0.009 %    |
+| 32 | 7.75×        | 9.80×           | 0.027 %    |
+| 48 | 10.98×       | 14.18×          | 0.051 %    |
+| 64 | 14.22×       | 17.24×          | 0.083 %    |
+| 96 | **15.36×**   | 17.90×          | 0.124 %    |
+
+**Other datasets (K = 64):** ML-20M → 12.10× wall / 12.53× compute (ΔRMSE 0.018 %);
+ML-10M → 11.37× wall / 11.79× compute (ΔRMSE 0.007 %).
+
+So: **up to ~15× wall-clock / ~18× compute on Netflix**, with test-RMSE change
+≤ 0.13 %. K = 64 is the best "large speedup at < 0.1 % RMSE" operating point; K = 96
+edges the wall-clock higher but crosses 0.1 %. Full tables in
+[`results/ALL_SUMMARY.txt`](results/ALL_SUMMARY.txt).
+
+Accuracy note: best **generalization** is at **K = 16 / K = 32** (lowest test RMSE);
+higher K trades accuracy for speed, and the FP32 baseline overfits identically — so
+the growing Δ at high K is a property of the data, not a weakness of the
+mixed-precision path.
+
+Supported latent dimensions: **K ∈ {16, 32, 48, 64, 96}** (enforced at compile
+time; see the guard note in `common.cuh`).
+
+---
+
+## 3. Repository layout
+
+```
+├── README.md                 ← this file
+├── BENCHMARKING.md           evaluation methodology (how the claims are made unattackable)
+├── FIXLOG.md                 engineering log / gotchas (K=80 trap, solver split points, …)
+│
+├── preprocess.cpp            CSV → frozen .bin (train/test split + CSR) — build this first
+│
+├── common.cuh                constants, K guard, tile sizes, dispatch thresholds
+├── data_utils.cuh            builds the BALS tiled/segmented sparse format
+├── fused_kernels.cuh         scalar FP32 path (sparse entities) + fused helpers
+├── wmma_kernels.cuh          FP16 tensor-core (WMMA) path for dense/giant entities
+├── cholesky_kernels.cuh      batched / packed Cholesky solvers
+├── main_experiment.cu        MAIN: runs FP32 baseline + APR in one binary → speedup ratio
+├── justapr.cu                APR-only variant (no baseline pass; for profiling a single run)
+│
+├── baseline_als_gpu.py       Pillar-2 external baseline (PyTorch/cuBLAS GPU ALS)
+├── bench_eval_rmse.py        scores ANY P,Q on the frozen .bin split (fair comparison)
+│
+├── run_final.sh              one-shot pipeline: GT tuning sweep + full K sweep, all datasets
+├── run_pillar2.sh            runs the external-baseline comparison
+├── setup_cumf.sh             optional: build/run cuMF_als as a third baseline
+└── results/                  sample summary output (numbers without needing a GPU)
+```
+
+---
+
+## 4. Requirements
+
+- **NVIDIA GPU with tensor cores** — compute capability ≥ 7.0 (Volta/Turing/Ampere).
+  Tested on Tesla T4 (`sm_75`, Colab) and RTX 3060 (`sm_86`).
+- **CUDA Toolkit 11+** (`nvcc` on PATH).
+- A C++14 host compiler (for `preprocess.cpp`).
+- For the Pillar-2 baseline: **Python 3.8+**, `pip install torch numpy scipy`
+  (CUDA-enabled PyTorch).
+
+Check your toolchain:
+```bash
+nvcc --version && nvidia-smi
+```
+
+---
+
+## 5. Data & preprocessing
+
+### 5.1 Input format
+A CSV in **MovieLens `ratings.csv`** layout — a header line, then one rating per
+line:
+```
+userId,movieId,rating,timestamp
+1,296,5.0,1147880044
+1,306,3.5,1147868817
+...
+```
+IDs are 1-based in the file. Netflix data must be converted to this same 4-column
+CSV first.
+
+### 5.2 Build the preprocessor
+```bash
+g++ -O3 -std=c++14 preprocess.cpp -o preprocess
+```
+
+### 5.3 Create the frozen `.bin`
+```bash
+./preprocess  path/to/ratings.csv  ratings.bin
+```
+The preprocessor does everything the training code depends on, and freezes it:
+1. **Frequency reordering** — users and items are relabelled most-popular-first, so
+   the non-zeros cluster in the top-left tiles (this is what makes BALS's dense-tile
+   path pay off).
+2. **80/20 train/test split, stratified per user, seed = 42** — deterministic and
+   reproducible.
+3. **CSR build** for both user-major and item-major orders.
+4. Serializes header + train COO + test COO + both CSR arrays into one
+   little-endian `.bin`.
+
+Because the split lives **inside the `.bin`**, every consumer (APR-BALS, the FP32
+baseline, the PyTorch baseline, cuMF) reads the *identical* arrays — so RMSE is
+directly comparable across all of them. Inspect a `.bin`:
+```bash
+python bench_eval_rmse.py ratings.bin
+```
+
+### 5.4 Expected filenames (used by `run_final.sh`)
+| Dataset        | `.bin` name           | short name |
+|----------------|-----------------------|------------|
+| MovieLens 100K | `ratings100.bin`      | `ml100k`   |
+| MovieLens 10M  | `ratings10.bin`       | `ml10m`    |
+| MovieLens 20M  | `ratings.bin`         | `ml20m`    |
+| Netflix        | `netflix_ratings.bin` | `netflix`  |
+
+---
+
+## 6. Build & run the factorization
+
+The latent dimension `K` is a **compile-time constant** (`-DK_DIM`) so the WMMA
+kernels can be specialized. Pick your GPU arch with `-arch`.
+
+```bash
+# K=64 on Ampere (RTX 30xx); use -arch=sm_75 for T4/Colab
+nvcc -O3 -arch=sm_86 -std=c++14 -DK_DIM=64 main_experiment.cu -o apr_k64
+
+# run on a preprocessed split  (arg 2 = lambda, default 0.1)
+./apr_k64 ratings.bin 0.1
+```
+
+Optional compile knobs (all have sensible defaults in `common.cuh`):
+
+| Macro                     | Meaning                                              | Default |
+|---------------------------|------------------------------------------------------|---------|
+| `K_DIM`                   | latent factors — one of {16,32,48,64,96}             | 16      |
+| `DENSE_NNZ_THRESH`        | tile-density cutoff for routing a tile to WMMA       | 4       |
+| `GIANT_NNZ_THRESH`        | nnz cutoff for the giant-entity WMMA reduction path  | 1024    |
+| `BATCHED_CHOLESKY_MAX_K`  | K at/below which the thread-per-system solver is used | 16     |
+
+### What it prints
+`main_experiment.cu` runs **two full trainings** — an FP32 baseline pass and the
+APR pass — then reports:
+- **Compute speedup** and **Wall-time speedup** (APR vs FP32 baseline),
+- Train/Test RMSE for both, with the absolute and % delta,
+- FLOP count, throughput (GFlops/s), and per-phase timing.
+
+### Getting the factor matrices `P` and `Q`
+After training, the user factors `P` (users × K) and item factors `Q` (items × K)
+are copied back to host into `h_X` and `h_Y` at the end of `main()`. The default
+build reports metrics rather than dumping the matrices; to persist the
+factorization, add a `write_vec`-style dump of `h_X`/`h_Y` there (the reader in
+`bench_eval_rmse.py` shows the exact binary layout to match). `justapr.cu` runs a
+single APR training without the baseline pass if you only want the factors/profile.
+
+---
+
+## 7. Reproduce the full sweep (one command)
+
+`run_final.sh` compiles and runs the whole pipeline for every `.bin` you pass:
+a `GIANT_NNZ_THRESH` tuning sweep at K=16, then the full K sweep {16,32,48,64,96}
+at the best threshold, writing per-dataset logs and a grand summary table.
+
+```bash
+# sm_86 by default; export ARCH=sm_75 for T4/Colab
+ARCH=sm_86 ./run_final.sh ratings100.bin ratings10.bin ratings.bin netflix_ratings.bin
+```
+Output lands in `final results/<name>_gpu.txt` and
+`final results/ALL_SUMMARY_<timestamp>.txt`. `SKIP_GT_SWEEP=1` reuses known-good
+thresholds for a fast rerun; `VERBOSE=1` echoes full program output.
+
+---
+
+## 8. External baseline (Pillar 2)
+
+Compare against standard-library GPU ALS on the **same frozen split**:
+```bash
+# PyTorch / cuBLAS GPU ALS — no custom kernels, no mixed precision
+python baseline_als_gpu.py ratings.bin --K 32 --lam 0.1 --iters 50
+
+# score any other model's P,Q on the identical split
+python bench_eval_rmse.py ratings.bin
+```
+Optional cuMF_als (rank must be a multiple of 10 → use K=20/30/40/60):
+```bash
+./setup_cumf.sh netflix_ratings.bin 20
+```
+`run_pillar2.sh` automates the baseline comparison. See `BENCHMARKING.md` §3–§4 for
+the protocol rules (do **not** claim to beat the Netflix Prize — the split differs).
+
+---
+
+## 9. Which files to upload to the repo
+
+**✅ Commit these (source + docs):**
+
+```
+README.md  BENCHMARKING.md  FIXLOG.md
+preprocess.cpp
+common.cuh  data_utils.cuh  fused_kernels.cuh  wmma_kernels.cuh  cholesky_kernels.cuh
+main_experiment.cu  justapr.cu
+baseline_als_gpu.py  bench_eval_rmse.py
+run_final.sh  run_pillar2.sh  setup_cumf.sh
+.gitignore
+```
+
+Optional but nice: a small `results/` folder with the final summary `.txt` logs so
+readers see numbers without a GPU, and the abstract PDF.
+
+**❌ Do NOT commit (add to `.gitignore`):**
+
+- **Compiled binaries** — `apr_k*`, `exp_k*`, `k16_fix`, `k32`, `main`,
+  `preprocess`, `preprocess.exe`, `bench_chol`, `justapr_k64_tiled`, `*.exe`,
+  `*.o`, `*.out`.
+- **Datasets** — `*.bin`, `*.csv`, `*.dat` (MovieLens/Netflix are hundreds of MB
+  and have their own licenses; link to the source instead — see below).
+- **Bulk logs / scratch** — `terminallog.txt`, `debugging_px.txt`,
+  `*_gpu.txt` dumps, `.jsonl` session logs, editor/IDE dirs (`.vscode/`, `.idea/`,
+  `.stfolder/`), `$RECYCLE.BIN/`.
+- **Large PDFs** you don't need in git history (keep only the abstract if any).
+
+Because the datasets aren't shipped, tell readers where to get them:
+- MovieLens: https://grouplens.org/datasets/movielens/
+- Netflix Prize: https://www.kaggle.com/datasets/netflix-inc/netflix-prize-data
+  (convert to `userId,movieId,rating,timestamp` CSV, then run `preprocess`).
+
+---
+
+## 10. Citation
+
+If you use this code, please cite the thesis:
+
+```bibtex
+@mastersthesis{aprbals,
+  title  = {Mixed-Precision GPU Matrix Factorization for ALS via FP16 Tensor Cores Without Accuracy Loss},
+  author = {Hafizur Rahman},
+  year   = {2026},
+  note   = {APR-BALS}
+}
+```
+
+Built on the BALS tiled sparse format (Blocked Alternating Least Squares for
+Parallel Sparse Matrix Factorization on GPUs).
+"# Accelerating-ALS-Matrix-Factorization-on-GPUs-via-Mixed-Precision-Tensor-Cores" 
