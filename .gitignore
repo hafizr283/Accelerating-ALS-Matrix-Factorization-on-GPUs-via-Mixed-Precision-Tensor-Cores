@@ -1,0 +1,38 @@
+# ── Compiled CUDA / C++ binaries ─────────────────────────────────────────
+apr_k*
+exp_k*
+justapr_k*
+k16* k32 k48 k64* k96*
+main
+bench_chol
+preprocess
+preprocess.exe
+*.exe
+*.o
+*.out
+*.obj
+
+# ── Datasets (get from grouplens.org / Kaggle; regenerate .bin locally) ──
+*.bin
+*.csv
+*.dat
+
+# ── Bulk logs & scratch ──────────────────────────────────────────────────
+terminallog.txt
+debugging_px.txt
+*_gpu.txt
+*_cpu.txt
+results.txt
+results2.txt
+*.jsonl
+
+# ── Editor / OS / IDE ────────────────────────────────────────────────────
+.vscode/
+.idea/
+.stfolder/
+$RECYCLE.BIN/
+.DS_Store
+Thumbs.db
+
+# ── Optional: keep large PDFs out of git history ─────────────────────────
+# *.pdf
