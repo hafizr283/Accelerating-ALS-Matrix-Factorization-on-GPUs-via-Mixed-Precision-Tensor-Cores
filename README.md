@@ -7,8 +7,8 @@
 > an FP32 GPU baseline **with ≤ 0.1 % change in test RMSE**.
 
 This repository contains the code, preprocessing, and benchmarking harness for the
-undergraduate thesis *"Mixed-Precision GPU Matrix Factorization for ALS via FP16
-Tensor Cores Without Accuracy Loss."*
+undergraduate thesis *"Accelerating ALS Matrix Factorization on GPUs via
+Mixed-Precision Tensor Cores."*
 
 > **This is the fresh, finalized version of the project.** The original development
 > repo — [hafizr283/GPU_Programming_Essentials](https://github.com/hafizr283/GPU_Programming_Essentials)
@@ -261,7 +261,7 @@ If you use this code, please cite the thesis:
 
 ```bibtex
 @mastersthesis{aprbals,
-  title  = {Mixed-Precision GPU Matrix Factorization for ALS via FP16 Tensor Cores Without Accuracy Loss},
+  title  = {Accelerating ALS Matrix Factorization on GPUs via Mixed-Precision Tensor Cores},
   author = {Hafizur Rahman},
   year   = {2026},
   note   = {APR-BALS}
